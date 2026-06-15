@@ -1,0 +1,137 @@
+---
+title: "FSA to HCC code"
+author: "PO Couture"
+format: html
+server: shiny
+---
+
+## Shiny Documents
+
+This Quarto document is made interactive using Shiny. Interactive documents allow readers to modify parameters and see the results immediately. Learn more about Shiny interactive documents at <https://quarto.org/docs/interactive/shiny/>.
+
+## Inputs and Outputs
+
+You can embed Shiny inputs and outputs in your document. Outputs are automatically updated whenever inputs change. This demonstrates how a standard R plot can be made interactive:
+
+```{r}
+library(sf)
+library(dplyr)
+library(ggplot2)
+
+# ---- 1. HCC: NBHC 33 community boundaries (NB Open Data, GeoJSON) ----
+hcc_url <- "https://gnb.socrata.com/api/geospatial/sdyn-7de6?method=export&format=GeoJSON"
+hcc <- st_read(hcc_url)
+
+# ---- 2. FSA: New Brunswick forward sortation areas (StatsCan ArcGIS REST) ----
+#    PRUID 13 = New Brunswick, so this returns only NB FSAs, no national download.
+fsa_url <- paste0(
+  "https://geo.statcan.gc.ca/geo_wa/rest/services/2021/",
+  "Cartographic_boundary_files/MapServer/14/query",
+  "?where=", URLencode("PRUID='13'", reserved = TRUE),
+  "&outFields=CFSAUID,PRUID&returnGeometry=true&outSR=3347&f=geojson"
+)
+fsa <- st_read(fsa_url)
+
+# ---- 3. Common projection (StatsCan Lambert) before any overlay or area maths ----
+hcc <- st_transform(hcc, 3347)
+fsa <- st_transform(fsa, 3347)
+
+# ---- 4. Overlay map ----
+ggplot() +
+  geom_sf(data = fsa, fill = NA, colour = "grey40", linewidth = 0.3) +
+  geom_sf(data = hcc, fill = NA, colour = "firebrick", linewidth = 0.6) +
+  theme_void()
+
+# ---- 5. Quantified overlap: how each FSA splits across HCCs by area ----
+#    Run names(hcc) first, then put the real community column where HCC_ID is.
+overlap <- st_intersection(fsa, hcc) |>
+  mutate(piece_area = as.numeric(st_area(geometry))) |>
+  st_drop_geometry() |>
+  group_by(CFSAUID) |>
+  mutate(pct_of_fsa = 100 * piece_area / sum(piece_area)) |>
+  ungroup() |>
+  arrange(CFSAUID, desc(pct_of_fsa))
+```
+
+
+```{r}
+library(sf); library(dplyr); library(leaflet); library(htmlwidgets)
+
+# ---- cross-reference lists from overlap ----
+fsa_to_hcc <- overlap |>
+  group_by(CFSAUID) |>
+  arrange(desc(pct_of_fsa), .by_group = TRUE) |>
+  summarise(hcc_list = paste0(en_nom_com, " (", round(pct_of_fsa), "%)",
+                              collapse = "<br>"), .groups = "drop")
+
+hcc_to_fsa <- overlap |>
+  group_by(com) |>
+  arrange(desc(pct_of_fsa), .by_group = TRUE) |>
+  summarise(fsa_list = paste0(CFSAUID, " (", round(pct_of_fsa), "%)",
+                              collapse = "<br>"), .groups = "drop")
+
+# ---- attach to geometries, project for leaflet ----
+fsa_pop <- fsa |> left_join(fsa_to_hcc, by = "CFSAUID") |> st_transform(4326)
+hcc_pop <- hcc |> left_join(hcc_to_fsa, by = "com")      |> st_transform(4326)
+# sanity check: nrow(fsa_pop) should be > 0 and match your FSA count
+
+pal <- colorFactor("Set2", domain = hcc_pop$nbhc_zone)
+bb  <- as.numeric(st_bbox(fsa_pop))
+
+# ---- map ----
+m <- leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  fitBounds(bb[1], bb[2], bb[3], bb[4]) |>
+  addPolygons(data = hcc_pop, group = "HCC",
+              fillColor = ~pal(nbhc_zone), fillOpacity = 0.30,
+              color = "#444444", weight = 2, opacity = 0.9,
+              label = ~en_nom_com,
+              popup = ~paste0("<b>HCC ", com, ": ", en_nom_com, "</b>",
+                              "<br><b>Zone:</b> ", nbhc_zone,
+                              "<br><b>FSAs inside:</b><br>", fsa_list),
+              highlightOptions = highlightOptions(weight = 4, color = "#000000")) |>
+  addPolygons(data = fsa_pop, group = "FSA",
+              fill = TRUE, fillOpacity = 0,          # invisible fill = whole area clickable
+              color = "#1A1A1A", weight = 2.2, opacity = 0.9, dashArray = "4",
+              label = ~CFSAUID,
+              popup = ~paste0("<b>FSA ", CFSAUID, "</b>",
+                              "<br><b>Connected HCC(s):</b><br>", hcc_list),
+              highlightOptions = highlightOptions(weight = 4, color = "#E0591A",
+                                                  bringToFront = TRUE)) |>
+  addLayersControl(overlayGroups = c("FSA", "HCC"),
+                   options = layersControlOptions(collapsed = FALSE))
+
+m
+saveWidget(m, "fsa_hcc_map.html", selfcontained = TRUE)
+```
+
+
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# Dominant HCC per FSA, built from the overlap object you already have
+crosswalk <- overlap |>
+  group_by(CFSAUID) |>
+  slice_max(pct_of_fsa, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(clean = pct_of_fsa >= 80) |>          # flag FSAs that straddle HCCs
+  arrange(clean, desc(pct_of_fsa))
+
+fsa_lab <- left_join(fsa, select(crosswalk, CFSAUID, community_name), by = "CFSAUID")
+
+ggplot() +
+  geom_sf(data = fsa_lab, aes(fill = community_name),
+          colour = "white", linewidth = 0.2, alpha = 0.75) +
+  geom_sf(data = hcc, fill = NA, colour = "grey25", linewidth = 0.4) +
+  geom_label_repel(data = hcc, aes(label = community_name, geometry = geometry),
+                   stat = "sf_coordinates", size = 2.4, label.padding = 0.12,
+                   min.segment.length = 0, max.overlaps = Inf, seed = 1) +
+  guides(fill = "none") +
+  theme_void()
+```
+
