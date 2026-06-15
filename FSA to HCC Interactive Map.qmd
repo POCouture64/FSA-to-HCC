@@ -55,9 +55,35 @@ overlap <- st_intersection(fsa, hcc) |>
 
 
 ```{r}
-library(sf); library(dplyr); library(leaflet); library(htmlwidgets)
+#| label: fsa-hcc-map
+#| message: false
+#| warning: false
 
-# ---- cross-reference lists from overlap ----
+library(sf) 
+library(dplyr)
+library(leaflet)
+library(htmlwidgets)
+
+# ---- 1. Load boundaries straight from source ----
+hcc_url <- "https://gnb.socrata.com/api/geospatial/sdyn-7de6?method=export&format=GeoJSON"
+fsa_url <- paste0(
+  "https://geo.statcan.gc.ca/geo_wa/rest/services/2021/",
+  "Cartographic_boundary_files/MapServer/14/query",
+  "?where=", URLencode("PRUID='13'", reserved = TRUE),
+  "&outFields=CFSAUID,PRUID&returnGeometry=true&outSR=3347&f=geojson")
+
+hcc <- st_read(hcc_url) |> st_transform(3347) |> st_make_valid()
+fsa <- st_read(fsa_url) |> st_transform(3347) |> st_make_valid()
+
+# ---- 2. Overlap: how each FSA splits across HCCs ----
+overlap <- st_intersection(fsa, hcc) |>
+  mutate(piece_area = as.numeric(st_area(geometry))) |>
+  st_drop_geometry() |>
+  group_by(CFSAUID) |>
+  mutate(pct_of_fsa = 100 * piece_area / sum(piece_area)) |>
+  ungroup()
+
+# ---- 3. Two-way cross-reference lists ----
 fsa_to_hcc <- overlap |>
   group_by(CFSAUID) |>
   arrange(desc(pct_of_fsa), .by_group = TRUE) |>
@@ -70,15 +96,14 @@ hcc_to_fsa <- overlap |>
   summarise(fsa_list = paste0(CFSAUID, " (", round(pct_of_fsa), "%)",
                               collapse = "<br>"), .groups = "drop")
 
-# ---- attach to geometries, project for leaflet ----
+# ---- 4. Attach lists, project to WGS84 for leaflet ----
 fsa_pop <- fsa |> left_join(fsa_to_hcc, by = "CFSAUID") |> st_transform(4326)
 hcc_pop <- hcc |> left_join(hcc_to_fsa, by = "com")      |> st_transform(4326)
-# sanity check: nrow(fsa_pop) should be > 0 and match your FSA count
 
 pal <- colorFactor("Set2", domain = hcc_pop$nbhc_zone)
 bb  <- as.numeric(st_bbox(fsa_pop))
 
-# ---- map ----
+# ---- 5. Interactive map ----
 m <- leaflet() |>
   addProviderTiles(providers$CartoDB.Positron) |>
   fitBounds(bb[1], bb[2], bb[3], bb[4]) |>
@@ -91,7 +116,7 @@ m <- leaflet() |>
                               "<br><b>FSAs inside:</b><br>", fsa_list),
               highlightOptions = highlightOptions(weight = 4, color = "#000000")) |>
   addPolygons(data = fsa_pop, group = "FSA",
-              fill = TRUE, fillOpacity = 0,          # invisible fill = whole area clickable
+              fill = TRUE, fillOpacity = 0,
               color = "#1A1A1A", weight = 2.2, opacity = 0.9, dashArray = "4",
               label = ~CFSAUID,
               popup = ~paste0("<b>FSA ", CFSAUID, "</b>",
@@ -101,9 +126,11 @@ m <- leaflet() |>
   addLayersControl(overlayGroups = c("FSA", "HCC"),
                    options = layersControlOptions(collapsed = FALSE))
 
+# ---- 6. Save the standalone link page, then show the map in the doc ----
+saveWidget(m, "FSA_&_HCC_Interactive_Map_index.html", selfcontained = TRUE)
 m
-saveWidget(m, "fsa_hcc_map_1.html", selfcontained = TRUE)
 ```
+
 
 
 
