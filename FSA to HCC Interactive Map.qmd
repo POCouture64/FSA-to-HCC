@@ -107,31 +107,3 @@ saveWidget(m, "fsa_hcc_map.html", selfcontained = TRUE)
 
 
 
-
-
-```{r}
-library(dplyr)
-library(ggplot2)
-library(ggrepel)
-
-# Dominant HCC per FSA, built from the overlap object you already have
-crosswalk <- overlap |>
-  group_by(CFSAUID) |>
-  slice_max(pct_of_fsa, n = 1, with_ties = FALSE) |>
-  ungroup() |>
-  mutate(clean = pct_of_fsa >= 80) |>          # flag FSAs that straddle HCCs
-  arrange(clean, desc(pct_of_fsa))
-
-fsa_lab <- left_join(fsa, select(crosswalk, CFSAUID, community_name), by = "CFSAUID")
-
-ggplot() +
-  geom_sf(data = fsa_lab, aes(fill = community_name),
-          colour = "white", linewidth = 0.2, alpha = 0.75) +
-  geom_sf(data = hcc, fill = NA, colour = "grey25", linewidth = 0.4) +
-  geom_label_repel(data = hcc, aes(label = community_name, geometry = geometry),
-                   stat = "sf_coordinates", size = 2.4, label.padding = 0.12,
-                   min.segment.length = 0, max.overlaps = Inf, seed = 1) +
-  guides(fill = "none") +
-  theme_void()
-```
-
